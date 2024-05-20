@@ -7,8 +7,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status, Response, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import binascii
+import base64
 
 load_dotenv()
 app = FastAPI()
@@ -90,7 +92,7 @@ class Doctor(Employee):
     @staticmethod
     def get(cc: int) -> "Doctor":
         cursor.execute(
-            "SELECT * FROM doctors JOIN person ON doctors.employees_person_cc = person.cc WHERE employees_person_cc = %s",
+            "SELECT person.*, employees.id_contrato, doctors.id_lic, doctors.instituto FROM person JOIN doctors ON doctors.employees_person_cc = person.cc JOIN employees ON employees.person_cc = person.cc WHERE employees.person_cc = %s",
             (cc,),
         )
         result = cursor.fetchone()
@@ -105,7 +107,7 @@ class Nurse(Employee):
     @staticmethod
     def get(cc: int) -> "Nurse":
         cursor.execute(
-            "SELECT * FROM nurses JOIN person ON nurses.employees_person_cc = person.cc WHERE employees_person_cc = %s",
+            "SELECT person.*, employees.id_contrato, nurses.hierarchy_level FROM person JOIN nurses ON nurses.employees_person_cc = person.cc JOIN employees ON employees.person_cc = person.cc WHERE employees.person_cc = %s",
             (cc,),
         )
         result = cursor.fetchone()
@@ -119,7 +121,7 @@ class Assistant(Employee):
     @staticmethod
     def get(cc: int) -> "Assistant":
         cursor.execute(
-            "SELECT * FROM assistants JOIN person ON assistants.employees_person_cc = person.cc WHERE employees_person_cc = %s",
+            "SELECT person.*, employees.id_contrato FROM person JOIN assistants ON assistants.employees_person_cc = person.cc JOIN employees ON employees.person_cc = person.cc WHERE employees.person_cc = %s",
             (cc,),
         )
         result = cursor.fetchone()
@@ -249,6 +251,13 @@ def get_password_hash(password: str):
     return context.hash(password)
 
 
+# def safe_base64_decode(s):
+#     # Add padding if necessary
+#     while len(s) % 4 != 0:
+#         s += '='
+#     return base64.urlsafe_b64decode(s)
+
+
 def authenticate(email: str, password: str) -> Optional[Person]:
     user = Person.get_by_email(email)
     if not user:
@@ -263,20 +272,28 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=60)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
-async def get_current_user(token: str = Depends(bearer)):
+async def get_current_user(request: Request):
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+        
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token[7:], SECRET_KEY, algorithms=[ALGORITHM])
         cc: int = payload.get("cc")
         role: str = payload.get("role")
         if cc is None or role is None:
@@ -300,7 +317,7 @@ async def get_current_employee(user_role=Depends(get_current_user)):
 
 
 @app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -320,6 +337,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     access_token = create_access_token(
         data={"cc": user.cc, "role": role}, expires_delta=access_token_expires
     )
+    response.set_cookie(key="access_token", value=f"Bearer {access_token}", httponly=True)
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -332,8 +350,6 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 async def get_person(
     id: int, current_user: Person = Depends(get_current_employee)
 ) -> Person:
-    user, role = current_user
-    print(user, role)
     return Person.get(id)
 
 
@@ -342,6 +358,3 @@ async def insert_person(
     person: Person, current_user: Person = Depends(get_current_employee)
 ) -> None:
     person.insert()
-
-
-# make hash optional
