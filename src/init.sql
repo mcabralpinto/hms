@@ -595,9 +595,9 @@ insert into
 		patients_person_cc
 	)
 values
-	(1, '2024-04-16 12:00:00', 1, 121212121, 111111111),
-	(2, '2024-04-17 11:00:00', 2, 131313131, 111111111),
-	(3, '2024-04-17 10:00:00', 3, 141414141, 222222222);
+	(1, '2024-05-16 12:00:00', 1, 121212121, 111111111),
+	(2, '2024-05-17 11:00:00', 2, 131313131, 111111111),
+	(3, '2024-05-17 10:00:00', 3, 141414141, 222222222);
 
 alter SEQUENCE appointments_id_app_seq
 RESTART WITH 4;
@@ -646,3 +646,718 @@ insert into
 values
 	(1, 1),
 	(2, 2);
+
+
+--addPerson
+create or replace procedure addPerson(name person.name%type, cc person.cc%type, email person.email%type, 
+									  contact person.contact%type, nif person.nif%type, password person.password%type)
+language plpgsql
+as $$
+begin
+	insert into person
+	values (name, cc, email, contact, nif, password);
+exception
+	when unique_violation then
+		raise exception 'Já existe esta pessoa';
+	when others then
+		raise exception 'error';
+end;
+$$;
+
+--addEmployee
+create or replace procedure addEmployee(cc person.cc%type)
+language plpgsql
+as $$
+begin
+	insert into employees values (nextval('employees_id_contrato_seq'), cc);
+end;
+$$;
+
+--addPatient (função a utilizar na API)
+create or replace procedure addPatient(name person.name%type, cc person.cc%type, email person.email%type,
+									  contact person.contact%type, nif person.nif%type, password person.password%type)
+language plpgsql
+as $$
+begin
+	call addPerson(name, cc, email, contact, nif, password);
+	insert into patients values (nextval('patients_health_user_id_seq'), cc);
+end;
+$$;
+
+--addSpecialization
+create or replace procedure addSpecialization(cc person.cc%type, esp specialization.name%type, esp_mae specialization.name%type)
+language plpgsql
+as $$
+declare
+	erro varchar(512) = 'error';
+	esp_id integer;
+	esp_mae_id integer;
+begin
+	select specialization.id_specialization into esp_id from specialization where specialization.name = esp;
+	if not found then
+		insert into specialization values (esp, nextval('specialization_id_specialization_seq'), currval('specialization_id_specialization_seq'));
+		esp_id := currval('specialization_id_specialization_seq');
+	elsif esp_mae == '' then
+		erro:='Especialidade já existe';
+		raise exception 'erro';
+	end if;
+	if esp_mae != '' then
+		select id_specialization into esp_mae_id from specialization where specialization.name = esp_mae;
+		if not found then
+			erro := 'Especialidade mãe não exsite';
+			raise exception 'erro';
+		end if;
+		update specialization
+		set specialization_id_specialization = esp_mae_id
+		where id_specialization = esp_id;
+	end if;
+exception
+	when others then
+		raise exception '%',erro;
+end;
+$$;
+
+--addDoctor (função a usar na API)
+create or replace procedure addDoctor(name person.name%type, cc person.cc%type, email person.email%type,
+									  contact person.contact%type, nif person.nif%type, password person.password%type,
+									 instituto doctors.instituto%type, esp specialization.name%type, esp_mae specialization.name%type default NULL)
+language plpgsql
+as $$
+declare
+	erro varchar(512) = 'erro';
+	esp_id integer;
+begin
+	call addPerson(name, cc, email, contact, nif, password);
+	call addEmployee(cc);
+	insert into doctors
+	values(nextval('doctors_id_lic_seq'), instituto, cc);
+	if esp_mae is not NULL then
+		call addSpecialization(cc, esp, esp_mae);
+	end if;
+	select id_specialization into esp_id from specialization where specialization.name = esp;
+	if not found then
+		erro := 'Especialidade não existe';
+		raise exception 'erro';
+	end if;
+	perform * from doctors_specialization 
+	where specialization_id_specialization = esp_id and doctors_employees_person_cc = cc;
+	if not found then
+		insert into doctors_specialization values (cc, esp_id);
+	else
+		erro := 'Doutor já tem esta especialidade';
+		raise exception 'erro';
+	end if;
+exception
+	when others then
+		raise exception '%', erro;
+end;
+$$;
+
+--addAssistant (Função a usar na API)
+create or replace procedure addAssistant(name person.name%type, cc person.cc%type, email person.email%type, 
+										 contact person.contact%type, nif person.nif%type, password person.password%type)
+language plpgsql
+as $$
+begin
+	call addPerson(name, cc, email, contact, nif, password);
+	call addEmployee(cc);
+	insert into assistants values (cc);
+end;
+$$;
+
+--addHiearachy
+create or replace procedure addHierarchy(hier hierarchy.nome%type, hier_chefe hierarchy.nome%type)
+language plpgsql
+as $$
+declare
+	level_id integer;
+	level_chefe_id integer;
+	erro varchar (512) = 'error';
+begin
+	select level into level_id from hierarchy where hierarchy.nome = hier;
+	if not found then
+		if hier_chefe = '' then
+			select level into level_chefe_id from hierarchy where level = hierarchy_level;
+			insert into hierarchy values(nextval('hierarchy_level_seq'), hier, currval('hierarchy_level_seq'));
+			update hierarchy 
+			set hierarchy_level = currval('hierarchy_level_seq')
+			where level = level_chefe_id;
+		else
+			select level into level_chefe_id from hierarchy where hierarchy.nome = hier_chefe;
+			if not found then
+				erro := 'Hierarquia chefe não existe';
+				raise exception 'erro';
+			end if;
+			insert into hierarchy values (nextval('hierarchy_level_seq'), hier, level_chefe_id);
+		end if;
+	else
+		erro:='Hierarquia já existe';
+		raise exception 'erro';
+	end if;
+exception
+	when others then
+		raise exception '%', erro;
+end;
+$$;
+
+--addNurse (Função a usar na API)
+create or replace procedure addNurse(name person.name%type, cc person.cc%type, email person.email%type,
+									  contact person.contact%type, nif person.nif%type, password person.password%type,
+									 hier hierarchy.nome%type, hier_chefe hierarchy.nome%type default NULL)
+language plpgsql
+as $$
+declare
+	erro varchar(512) = 'error';
+	level_id integer;
+begin
+	call addPerson(name, cc, email, contact, nif, password);
+	call addEmployee(cc);
+	if hier_chefe is not NULL then
+		call addHierarchy(hier, hier_chefe);
+	end if;
+	select level into level_id from hierarchy where hierarchy.nome = hier;
+	if not found then
+		erro := 'hierarquia não existe';
+		raise exception 'erro';
+	end if;
+	insert into nurses values (level_id, cc);
+exception
+	when others then
+		raise exception '%', erro;
+end;
+$$;
+
+--addPrescription para appointments
+create type argumento as (amt integer, med character varying);
+create or replace procedure addPrescriptionApp(date appointments.data%type, id appointments.id_app%type, variadic meds argumento[])
+language plpgsql
+as $$
+declare
+	existe prescriptions.id_pres%type;
+	nMeds integer;
+	erro varchar(512) = 'erro';
+begin
+	perform id_app from appointments where data = date and id_app = id;
+	if not found then
+		erro:='Data e id da consulta nao consistentes';
+		raise exception 'erro';
+	end if;
+	perform appointments_id_app from appointments_prescriptions where id = appointments_id_app;
+	if found then
+		erro:='Já existe prescrição para esta consulta';
+		raise exception 'erro';
+	end if;
+	drop table if exists auxiliar;
+	create local temporary table auxiliar (amount integer, medication varchar(512));
+	for i in 1..array_upper(meds, 1)
+	loop
+		insert into auxiliar values (meds[i].amt, meds[i].med);
+	end loop;
+	select prescriptions_id_pres into existe
+	from is_comprised_app left join (auxiliar left join medication on auxiliar.medication = medication.name) on medication.id_med = is_comprised_app.medication_id_med
+	where auxiliar.amount = is_comprised_app.amount
+	group by prescriptions_id_pres
+	having count(medication_id_med) = array_upper(meds, 1);
+	if not found then
+		insert into prescriptions values(nextval('prescriptions_id_pres_seq'));
+		existe = currval('prescriptions_id_pres_seq');
+		select count(id_med) into nMeds
+		from medication, auxiliar
+		where medication.name = auxiliar.medication;
+		if (nMeds != (select count(*) from auxiliar)) then
+			erro := 'Pelo menos um dos medicamentos não existe';
+			raise exception 'erro';
+		end if;
+		insert into is_comprised_app (prescriptions_id_pres, amount, medication_id_med)
+			select id_pres, sum(amount), medication.id_med
+			from (select id_pres from prescriptions where id_pres = currval('prescriptions_id_pres_seq')) as foo, (auxiliar left join medication on auxiliar.medication = medication.name)
+			group by id_pres, id_med;
+	end if;
+	drop table auxiliar;
+	insert into appointments_prescriptions values (id, existe);
+exception
+	when others then
+		raise exception '%', erro;
+end;
+$$;
+
+--addPrescriptions para Hospitalizations
+create or replace procedure addPrescriptionHos(date hospitalizations.date_begin%type, id hospitalizations.id_hos%type, variadic meds argumento[])
+language plpgsql
+as $$
+declare
+	existe prescriptions.id_pres%type;
+	nMeds integer;
+	erro varchar(512) = 'erro';
+begin
+	perform id_hos from hospitalizations where date_begin = date and id_hos = id;
+	if not found then
+		erro:='Data e id da hospitalização nao consistentes';
+		raise exception 'erro';
+	end if;
+	perform hospitalizations_id_hos from prescriptions_hospitalizations where id = hospitalizations_id_hos;
+	if found then
+		erro:='Já existe prescrição para esta hospitalização';
+		raise exception 'erro';
+	end if;
+	drop table if exists auxiliar;
+	create local temporary table auxiliar (amount integer, medication varchar(512));
+	for i in 1..array_upper(meds, 1)
+	loop
+		insert into auxiliar values (meds[i].amt, meds[i].med);
+	end loop;
+	select prescriptions_id_pres into existe
+	from is_comprised_app left join (auxiliar left join medication on auxiliar.medication = medication.name) on medication.id_med = is_comprised_app.medication_id_med
+	where auxiliar.amount = is_comprised_app.amount
+	group by prescriptions_id_pres
+	having count(medication_id_med) = array_upper(meds, 1);
+	if not found then
+		insert into prescriptions values(nextval('prescriptions_id_pres_seq'));
+		existe := currval('prescriptions_id_pres_seq');
+		select count(id_med) into nMeds
+		from medication, auxiliar
+		where auxiliar.medication = medication.name;
+		if (nMeds != (select count(*) from auxiliar)) then
+			erro := 'Pelo menos um dos medicamentos não existe';
+			raise exception 'erro';
+		end if;
+		insert into is_comprised_app (prescriptions_id_pres, amount, medication_id_med)
+			select id_pres, sum(amount), medication.id_med
+			from (select id_pres from prescriptions where id_pres = currval('prescriptions_id_pres_seq')) as foo, (auxiliar left join medication on auxiliar.medication = medication.name)
+			group by id_pres, id_med;
+	end if;
+	drop table auxiliar;
+	insert into prescriptions_hospitalizations values (existe, id);
+exception
+	when others then
+		raise exception '%', erro;
+end;
+$$;
+
+--addMedication
+create type novoMedicamento as (prob real, sev real, descr character varying);
+create or replace procedure addMedication(med medication.name%type, variadic meds novoMedicamento[])
+language plpgsql
+as $$
+declare
+    medi medication.id_med%type;
+    side side_effects.id_side%type;
+    erro varchar(512) = 'erro';
+begin
+    perform id_med from medication where medication.name = med;
+    if not found then
+        insert into medication values (nextval('medication_id_med_seq'), med);
+        medi:=currval('medication_id_med_seq');
+        for i in 1..array_upper(meds, 1)
+        loop
+            select id_side into side from side_effects where side_effects.description = meds[i].descr;
+            if not found then
+                insert into side_effects values (nextval('side_effects_id_side_seq'), meds[i].descr);
+                side:=currval('side_effects_id_side_seq');
+            end if;
+            insert into corresponds (side_effects_id_side, medication_id_med, probability, severity) 
+            values (side, medi, meds[i].prob, meds[i].sev); 
+        end loop;
+    else
+        erro := 'Medicamento já existe';
+        raise exception 'erro';
+    end if;
+exception
+    when others then
+        raise exception '%', erro;
+end;
+$$;
+
+
+CREATE OR REPLACE FUNCTION get_top3_patients()
+RETURNS TABLE (
+    patient_name character varying(512),
+    total_payed double precision,
+    procedures JSON
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY 
+    SELECT
+        sub.nome AS patient_name,
+        sub.total_payed,
+        json_agg(json_build_object('id', sub.app_id, 'doctor_id', sub.doctor_id, 'date', sub.date)) AS procedures
+
+    FROM (
+        SELECT
+            person.name AS nome, 
+            SUM(billings.payed) OVER (PARTITION BY person.name) AS total_payed, 
+            appointments.id_app AS app_id,
+            appointments.doctors_employees_person_cc AS doctor_id,
+            appointments.data AS date
+        
+        FROM
+            person 
+            JOIN patients ON person.cc = patients.person_cc
+            JOIN appointments ON patients.person_cc = appointments.patients_person_cc
+            JOIN billings ON appointments.billings_id_bill = billings.id_bill
+        WHERE
+       	    EXTRACT(MONTH FROM appointments.data) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(YEAR FROM appointments.data) = EXTRACT(YEAR FROM CURRENT_DATE)
+    ) AS sub
+
+    GROUP BY
+        sub.nome,
+        sub.total_payed
+
+    ORDER BY
+        sub.total_payed DESC,
+        sub.nome
+    LIMIT 3;
+END; $$;
+
+CREATE OR REPLACE FUNCTION get_daily_summary(p_date date)
+RETURNS TABLE (
+    surgeries bigint,
+    prescriptions bigint,
+    amount_spent double precision
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY 
+    SELECT 
+        COUNT(DISTINCT id_sur) AS surgeries, 
+        COUNT(DISTINCT prescriptions_id_pres) AS prescriptions, 
+        SUM(payed) AS amount_spent
+    FROM 
+        hospitalizations
+        JOIN billings ON hospitalizations.billings_id_bill = billings.id_bill
+        JOIN surgeries ON hospitalizations.id_hos = surgeries.hospitalizations_id_hos
+        JOIN prescriptions_hospitalizations ON hospitalizations.id_hos = prescriptions_hospitalizations.hospitalizations_id_hos
+    WHERE 
+        hospitalizations.date_begin = p_date;
+END; $$;
+
+CREATE OR REPLACE FUNCTION get_top3_patients()
+RETURNS TABLE (
+    patient_name character varying(512),
+    total_payed double precision,
+    procedures JSON
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY 
+    SELECT
+        sub.nome AS patient_name,
+        sub.total_payed,
+        json_agg(json_build_object('id', sub.app_id, 'doctor_id', sub.doctor_id, 'date', sub.date)) AS procedures
+
+    FROM (
+        SELECT
+            person.name AS nome, 
+            SUM(billings.payed) OVER (PARTITION BY person.name) AS total_payed, 
+            appointments.id_app AS app_id,
+            appointments.doctors_employees_person_cc AS doctor_id,
+            appointments.data AS date
+        
+        FROM
+            person 
+            JOIN patients ON person.cc = patients.person_cc
+            JOIN appointments ON patients.person_cc = appointments.patients_person_cc
+            JOIN billings ON appointments.billings_id_bill = billings.id_bill
+        WHERE
+       	    EXTRACT(MONTH FROM appointments.data) = EXTRACT(MONTH FROM CURRENT_DATE)
+            AND EXTRACT(YEAR FROM appointments.data) = EXTRACT(YEAR FROM CURRENT_DATE)
+    ) AS sub
+
+    GROUP BY
+        sub.nome,
+        sub.total_payed
+
+    ORDER BY
+        sub.total_payed DESC,
+        sub.nome
+    LIMIT 3;
+END; $$;
+
+CREATE OR REPLACE FUNCTION pay_bill(bill_id integer, amount double precision)
+RETURNS double precision
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    total_bill double precision;
+    payed_amount double precision;
+BEGIN
+    SELECT b.total, b.payed INTO total_bill, payed_amount
+    FROM billings AS b
+    WHERE b.id_bill = bill_id;
+
+    IF amount <= (total_bill - payed_amount) THEN
+        UPDATE billings
+        SET payed = payed + amount
+        WHERE id_bill = bill_id;
+        
+        -- Calculate and return the remaining value
+        RETURN total_bill - (payed_amount + amount);
+    ELSE
+        RAISE EXCEPTION 'Payment amount is too much';
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE EXCEPTION 'An error occurred: %', SQLERRM;
+END;
+$$;
+
+-- Create a function to check if a doctor is available
+CREATE OR REPLACE FUNCTION is_doctor_available(doctor_id bigint, appointment_date timestamp without time zone)
+RETURNS BOOLEAN AS $$
+DECLARE
+    is_available BOOLEAN;
+BEGIN
+    SELECT NOT EXISTS (
+        SELECT 1 FROM appointments 
+        WHERE doctor_id = doctors_employees_person_cc 
+        AND appointment_date BETWEEN (data - INTERVAL '30 minutes') AND (data + INTERVAL '30 minutes')
+    ) INTO is_available;
+
+    RETURN is_available;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create a function to create a new bill
+CREATE OR REPLACE FUNCTION create_new_bill()
+RETURNS TRIGGER AS $$
+DECLARE
+    nif bigint;
+BEGIN
+    -- Get the NIF from the patients table
+    SELECT person.nif INTO nif FROM person WHERE cc = NEW.patients_person_cc;
+
+    -- Create a new bill and get its id
+    INSERT INTO billings (total, payed, NIF) 
+    VALUES (100, 0, nif) 
+    RETURNING id_bill INTO NEW.billings_id_bill;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER create_bill_trigger
+BEFORE INSERT ON appointments
+FOR EACH ROW
+EXECUTE FUNCTION create_new_bill();
+
+-- Create a function to schedule an appointment
+CREATE OR REPLACE FUNCTION schedule_appointment(doctor_id bigint, appointment_date timestamp without time zone, person_cc bigint)
+RETURNS TABLE (status_code INT, errors TEXT, appointment_id INT, bill_id INT) AS $$
+BEGIN
+    IF NOT is_doctor_available(doctor_id, appointment_date) THEN
+        status_code := 400;
+        errors := 'Doctor is not available on the specified date';
+        RETURN NEXT;
+    ELSE
+        INSERT INTO appointments (data, doctors_employees_person_cc, patients_person_cc) 
+        VALUES (appointment_date, doctor_id, person_cc) 
+        RETURNING id_app, billings_id_bill INTO appointment_id, bill_id;
+        status_code := 200;
+        RETURN NEXT;
+    END IF;
+EXCEPTION
+    WHEN others THEN
+        status_code := 500;
+        errors := SQLERRM;
+        RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TYPE nurse_role AS (
+    nurse_id BIGINT,
+    role varchar
+);
+
+DROP FUNCTION is_doctor_available(bigint,timestamp without time zone);
+CREATE OR REPLACE FUNCTION is_doctor_available(doctor_id bigint, input_date timestamp without time zone)
+RETURNS BOOLEAN AS $$
+DECLARE
+    is_available BOOLEAN;
+BEGIN
+    SELECT NOT EXISTS (
+        SELECT 1 FROM appointments 
+        WHERE doctor_id = doctors_employees_person_cc 
+        AND appointments.data BETWEEN (input_date - INTERVAL '30 minutes') AND (input_date + INTERVAL '30 minutes')
+    ) AND NOT EXISTS (
+        SELECT 1 FROM surgeries 
+        JOIN does_surgery ON surgeries.id_sur = does_surgery.surgeries_id_sur
+        WHERE doctors_employees_person_cc = doctor_id 
+        AND data BETWEEN (input_date - INTERVAL '30 minutes') AND (input_date + INTERVAL '30 minutes')
+    ) INTO is_available;
+
+    RETURN is_available;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION is_nurse_available(nurse_id bigint, input_date timestamp without time zone)
+RETURNS BOOLEAN AS $$
+DECLARE
+    is_available BOOLEAN;
+BEGIN
+    SELECT NOT EXISTS (
+        SELECT 1 FROM surgeries 
+        JOIN does_surgery ON surgeries.id_sur = does_surgery.surgeries_id_sur
+        WHERE nurses_employees_person_cc = nurse_id 
+        AND data BETWEEN (input_date - INTERVAL '30 minutes') AND (input_date + INTERVAL '30 minutes')
+    ) INTO is_available;
+
+    RETURN is_available;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION create_new_bill_surgery()
+RETURNS TRIGGER AS $$
+DECLARE
+    nif bigint;
+BEGIN
+    SELECT person.nif INTO nif FROM person WHERE cc = NEW.patients_person_cc;
+    INSERT INTO billings (total, payed, NIF) 
+    VALUES (300, 0, nif) 
+    RETURNING id_bill INTO NEW.billings_id_bill;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER create_bill_trigger
+BEFORE INSERT ON hospitalizations
+FOR EACH ROW
+EXECUTE FUNCTION create_new_bill_surgery();
+
+CREATE OR REPLACE FUNCTION schedule_surgery(input_patient_id bigint, input_doctor_id bigint, nurses nurse_role[], input_date timestamp without time zone, input_hospitalization_id int, surgery_name varchar)
+RETURNS TABLE (status_code INT, errors TEXT, returned_hospitalization_id INT, surgery_id INT, patient_id INT, doctor_id INT, date timestamp without time zone) AS $$
+DECLARE
+    nurse_role nurse_role;
+    new_hospitalization_id bigint;
+    new_surgery_id bigint;
+BEGIN
+    -- Check if the doctor is available
+    IF NOT is_doctor_available(input_doctor_id, input_date) THEN
+        RAISE EXCEPTION 'Doctor is not available on the specified date' USING ERRCODE = '45000';
+    END IF;
+
+    -- Check if the nurses are available
+    FOREACH nurse_role IN ARRAY nurses LOOP
+        IF NOT is_nurse_available(nurse_role.nurse_id, input_date) THEN
+            RAISE EXCEPTION 'Nurse with id % is not available on the specified date', nurse_role.nurse_id USING ERRCODE = '45000';
+        END IF;
+    END LOOP;
+
+    -- If a hospitalization_id is provided, check if it exists
+    IF input_hospitalization_id IS NOT NULL THEN
+        IF NOT EXISTS (SELECT 1 FROM hospitalizations WHERE id_hos = input_hospitalization_id) THEN
+            RAISE EXCEPTION 'Hospitalization with id % does not exist', input_hospitalization_id USING ERRCODE = '45000';
+        END IF;
+    -- If a hospitalization_id is not provided, create a new hospitalization and a new bill
+    ELSE
+        INSERT INTO hospitalizations (date_begin, date_end, room, nurses_employees_person_cc, patients_person_cc) 
+        VALUES (input_date, input_date, new_room, (SELECT employees_person_cc FROM nurses WHERE hierarchy_level = 1 LIMIT 1), input_patient_id) 
+        RETURNING id_hos INTO new_hospitalization_id;
+    END IF;
+
+    -- Create a new surgery and associate it with the doctor and the hospitalization
+    INSERT INTO surgeries (name, data, doctors_employees_person_cc, hospitalizations_id_hos) 
+    VALUES (surgery_name, input_date, input_doctor_id, COALESCE(input_hospitalization_id, new_hospitalization_id)) 
+    RETURNING id_sur INTO new_surgery_id;
+
+    -- For each nurse, create a record in the does_surgery table
+    FOREACH nurse_role IN ARRAY nurses LOOP
+        INSERT INTO does_surgery (roles_role_num, surgeries_id_sur, nurses_employees_person_cc) 
+        VALUES ((SELECT role_num FROM roles WHERE role_name = nurse_role.role), new_surgery_id, nurse_role.nurse_id);
+    END LOOP;
+
+    RETURN QUERY SELECT 200, NULL, COALESCE(input_hospitalization_id, new_hospitalization_id)::int, new_surgery_id::int, input_patient_id::int, input_doctor_id::int, input_date;
+EXCEPTION
+    WHEN others THEN
+        RETURN QUERY SELECT 500, SQLERRM, NULL::int, NULL::int, NULL::int, NULL::int, NULL::timestamp without time zone;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION schedule_surgery(
+    input_patient_id bigint, 
+    input_doctor_id bigint, 
+    nurses nurse_role[], 
+    input_date timestamp without time zone, 
+    surgery_name varchar,
+    hospitalization_date_begin DATE,
+    hospitalization_date_end DATE,
+    hospitalization_room INT,
+    hospitalization_nurse_id BIGINT
+)
+RETURNS TABLE (
+    status_code INT, 
+    errors TEXT, 
+    returned_hospitalization_id INT, 
+    surgery_id INT, 
+    patient_id INT, 
+    doctor_id INT, 
+    date timestamp without time zone
+) AS $$
+DECLARE
+    nurse_role nurse_role;
+    new_hospitalization_id bigint;
+    new_surgery_id bigint;
+BEGIN
+    -- Check if the doctor is available
+    IF NOT is_doctor_available(input_doctor_id, input_date) THEN
+        RAISE EXCEPTION 'Doctor is not available on the specified date' USING ERRCODE = '45000';
+    END IF;
+
+    -- Check if the nurses are available
+    FOREACH nurse_role IN ARRAY nurses LOOP
+        IF NOT is_nurse_available(nurse_role.nurse_id, input_date) THEN
+            RAISE EXCEPTION 'Nurse with id % is not available on the specified date', nurse_role.nurse_id USING ERRCODE = '45000';
+        END IF;
+    END LOOP;
+
+    -- Create a new hospitalization
+    INSERT INTO hospitalizations (date_begin, date_end, room, nurses_employees_person_cc, patients_person_cc) 
+    VALUES (hospitalization_date_begin, hospitalization_date_end, hospitalization_room, hospitalization_nurse_id, input_patient_id) 
+    RETURNING id_hos INTO new_hospitalization_id;
+
+    -- Create a new surgery and associate it with the doctor and the hospitalization
+    INSERT INTO surgeries (name, data, doctors_employees_person_cc, hospitalizations_id_hos) 
+    VALUES (surgery_name, input_date, input_doctor_id, new_hospitalization_id) 
+    RETURNING id_sur INTO new_surgery_id;
+
+    -- For each nurse, create a record in the does_surgery table
+    FOREACH nurse_role IN ARRAY nurses LOOP
+        INSERT INTO does_surgery (roles_role_num, surgeries_id_sur, nurses_employees_person_cc) 
+        VALUES ((SELECT role_num FROM roles WHERE role_name = nurse_role.role), new_surgery_id, nurse_role.nurse_id);
+    END LOOP;
+
+    RETURN QUERY SELECT 200, NULL, new_hospitalization_id::int, new_surgery_id::int, input_patient_id::int, input_doctor_id::int, input_date;
+EXCEPTION
+    WHEN others THEN
+        RETURN QUERY SELECT 500, SQLERRM, NULL::int, NULL::int, NULL::int, NULL::int, NULL::timestamp without time zone;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION create_new_bill_surgery()
+RETURNS TRIGGER AS $$
+DECLARE
+    new_bill_id bigint;
+BEGIN
+    -- Create a new bill
+    INSERT INTO billings (total, payed, NIF) 
+    VALUES (300, 0, (SELECT nif FROM person WHERE cc = NEW.patients_person_cc)) 
+    RETURNING id_bill INTO new_bill_id;
+
+    -- Set the billings_id_bill field of the new hospitalization
+    NEW.billings_id_bill = new_bill_id;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER create_bill_trigger_hosp
+BEFORE INSERT ON hospitalizations
+FOR EACH ROW
+EXECUTE FUNCTION create_new_bill_surgery();
+
+

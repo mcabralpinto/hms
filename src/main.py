@@ -358,3 +358,48 @@ async def insert_person(
     person: Person, current_user: Person = Depends(get_current_employee)
 ) -> None:
     person.insert()
+
+@app.get("/dbproj/top3")
+async def get_top3_patients(current_user: Person = Depends(get_current_employee)):
+    user, role = current_user
+    if role != "assistant":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
+        )
+    cursor.execute("SELECT * FROM get_top3_patients()")
+    result = cursor.fetchall()
+    column_names = [column[0] for column in cursor.description]
+    result = [dict(zip(column_names, row)) for row in result]
+    return result
+
+@app.get("/dbproj/report")
+async def get_monthly_report(current_user: Person = Depends(get_current_employee)):
+    user, role = current_user
+    if role != "assistant":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
+        )
+    query = """
+    SELECT month, name, total_surgeries
+    FROM    
+    (
+        SELECT 
+        TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM') AS month, 
+        person.name, 
+        COUNT(*) AS total_surgeries,
+        RANK() OVER (PARTITION BY TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM') ORDER BY COUNT(*) DESC) as rank
+
+        FROM surgeries
+        JOIN person ON person.cc = surgeries.doctors_employees_person_cc
+        WHERE surgeries.data >= (NOW() - INTERVAL '1 year')
+        GROUP BY TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM'), person.name
+
+    )AS sub
+
+    WHERE rank = 1 ORDER BY month DESC;
+    """
+    cursor.execute(query)
+    result = cursor.fetchall()
+    column_names = [column[0] for column in cursor.description]
+    result = [dict(zip(column_names, row)) for row in result]
+    return {"status": 200, "results": result}
