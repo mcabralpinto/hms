@@ -59,7 +59,7 @@ class Person(BaseModel):
             return None
         return Person(**dict(zip(Person.model_fields.keys(), result)))
 
-    def insert(self) -> None:
+    def register(self) -> None:
         self.hashed_password = get_password_hash(self.hashed_password)
         cursor.execute(
             "INSERT INTO person (name, cc, email, contact, nif, hashed_password) VALUES (%s, %s, %s, %s, %s, %s)",
@@ -79,6 +79,16 @@ class Person(BaseModel):
 
 class Patient(Person):
     health_user_id: int
+
+    @staticmethod
+    def get_top3() -> list[dict]:
+        cursor.execute("SELECT * FROM get_top3_patients()")
+        result = cursor.fetchall()
+        if result is None:
+            return None
+        column_names = [column[0] for column in cursor.description]
+        return [dict(zip(column_names, row)) for row in result] 
+        #return [Patient(**dict(zip(Patient.model_fields.keys(), row))) for row in result]
 
 
 class Employee(Person):
@@ -160,6 +170,33 @@ class Surgery(BaseModel):
     date: datetime
     doctors_employees_person_cc: int
     hospitalizations_id_hos: int
+
+    @staticmethod
+    def get_monthly_report() -> list[dict]:
+        query = """
+        SELECT month, name, total_surgeries
+        FROM    
+        (
+            SELECT 
+            TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM') AS month, 
+            person.name, 
+            COUNT(*) AS total_surgeries,
+            RANK() OVER (PARTITION BY TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM') ORDER BY COUNT(*) DESC) as rank
+
+            FROM surgeries
+            JOIN person ON person.cc = surgeries.doctors_employees_person_cc
+            WHERE surgeries.data >= (NOW() - INTERVAL '1 year')
+            GROUP BY TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM'), person.name
+
+        )AS sub
+
+        WHERE rank = 1 ORDER BY month DESC;
+        """
+        cursor.execute(query)
+        result = cursor.fetchall()
+        column_names = [column[0] for column in cursor.description]
+        result = [dict(zip(column_names, row)) for row in result]
+        return {"status": 200, "results": result}
 
 
 class Role(BaseModel):
@@ -251,13 +288,6 @@ def get_password_hash(password: str):
     return context.hash(password)
 
 
-# def safe_base64_decode(s):
-#     # Add padding if necessary
-#     while len(s) % 4 != 0:
-#         s += '='
-#     return base64.urlsafe_b64decode(s)
-
-
 def authenticate(email: str, password: str) -> Optional[Person]:
     user = Person.get_by_email(email)
     if not user:
@@ -291,7 +321,7 @@ async def get_current_user(request: Request):
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-        
+
     try:
         payload = jwt.decode(token[7:], SECRET_KEY, algorithms=[ALGORITHM])
         cc: int = payload.get("cc")
@@ -316,8 +346,25 @@ async def get_current_employee(user_role=Depends(get_current_user)):
     return user_role
 
 
-@app.post("/token", response_model=Token)
-async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends()):
+async def get_current_assistant(user_role=Depends(get_current_user)):
+    user, role = user_role
+    if role != "assistant":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
+        )
+    return user_role
+
+
+# +-------------------+
+# | Endpoint handlers |
+# +-------------------+
+
+
+# change to return it exactly as in the project statement
+@app.post("/user", response_model=Token)
+async def login_for_access_token(
+    response: Response, form_data: OAuth2PasswordRequestForm = Depends()
+):
     user = authenticate(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -337,15 +384,13 @@ async def login_for_access_token(response: Response, form_data: OAuth2PasswordRe
     access_token = create_access_token(
         data={"cc": user.cc, "role": role}, expires_delta=access_token_expires
     )
-    response.set_cookie(key="access_token", value=f"Bearer {access_token}", httponly=True)
+    response.set_cookie(
+        key="access_token", value=f"Bearer {access_token}", httponly=True
+    )
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-# +-------------------+
-# | Endpoint handlers |
-# +-------------------+
-
-
+# test endpoint
 @app.get("/person/{id}")
 async def get_person(
     id: int, current_user: Person = Depends(get_current_employee)
@@ -353,53 +398,19 @@ async def get_person(
     return Person.get(id)
 
 
-@app.put("/person")
-async def insert_person(
-    person: Person, current_user: Person = Depends(get_current_employee)
+#change in order to insert users correctly based on the role
+@app.put("/register/{role}")
+async def register_person(
+    role: str, person: Person#, current_user: Person = Depends(get_current_employee)
 ) -> None:
-    person.insert()
+    person.register()
+
 
 @app.get("/dbproj/top3")
-async def get_top3_patients(current_user: Person = Depends(get_current_employee)):
-    user, role = current_user
-    if role != "assistant":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
-        )
-    cursor.execute("SELECT * FROM get_top3_patients()")
-    result = cursor.fetchall()
-    column_names = [column[0] for column in cursor.description]
-    result = [dict(zip(column_names, row)) for row in result]
-    return result
+async def get_top3_patients(current_user: Person = Depends(get_current_assistant)):
+    return Patient.get_top3()
+
 
 @app.get("/dbproj/report")
-async def get_monthly_report(current_user: Person = Depends(get_current_employee)):
-    user, role = current_user
-    if role != "assistant":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions"
-        )
-    query = """
-    SELECT month, name, total_surgeries
-    FROM    
-    (
-        SELECT 
-        TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM') AS month, 
-        person.name, 
-        COUNT(*) AS total_surgeries,
-        RANK() OVER (PARTITION BY TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM') ORDER BY COUNT(*) DESC) as rank
-
-        FROM surgeries
-        JOIN person ON person.cc = surgeries.doctors_employees_person_cc
-        WHERE surgeries.data >= (NOW() - INTERVAL '1 year')
-        GROUP BY TO_CHAR(date_trunc('month', surgeries.data), 'YYYY-MM'), person.name
-
-    )AS sub
-
-    WHERE rank = 1 ORDER BY month DESC;
-    """
-    cursor.execute(query)
-    result = cursor.fetchall()
-    column_names = [column[0] for column in cursor.description]
-    result = [dict(zip(column_names, row)) for row in result]
-    return {"status": 200, "results": result}
+async def get_monthly_report(current_user: Person = Depends(get_current_assistant)):
+    return Surgery.get_monthly_report()
