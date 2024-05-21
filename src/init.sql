@@ -461,7 +461,7 @@ insert into
 	)
 values
 	('cardiologia', 1, 1),
-	('cardioqualquercoisa', 2, 1),
+	('eletrofisiologia', 2, 1),
 	('neurologia', 3, 3);
 
 alter SEQUENCE specialization_id_specialization_seq
@@ -480,10 +480,10 @@ values
 insert into
 	hierarchy (level, nome, hierarchy_level)
 values
-	(1, 'Chefe', 1),
-	(2, 'Assistente', 1),
-	(3, 'Estagiario', 2),
-	(4, 'Continuo', 2);
+	(1, 'Head', 1),
+	(2, 'Assistant', 1),
+	(3, 'Intern', 2),
+	(4, 'Janitor', 2);
 
 alter SEQUENCE hierarchy_level_seq
 RESTART WITH 5;
@@ -658,7 +658,7 @@ begin
 	values (name, cc, email, contact, nif, password);
 exception
 	when unique_violation then
-		raise exception 'Já existe esta pessoa';
+		raise exception 'This person already exists';
 	when others then
 		raise exception 'error';
 end;
@@ -704,7 +704,7 @@ begin
 	if esp_mae != '' then
 		select id_specialization into esp_mae_id from specialization where specialization.name = esp_mae;
 		if not found then
-			erro := 'Especialidade mãe não exsite';
+			erro := 'This master specialization does not exist';
 			raise exception 'erro';
 		end if;
 		update specialization
@@ -720,7 +720,7 @@ $$;
 --addDoctor (função a usar na API)
 create or replace procedure addDoctor(name person.name%type, cc person.cc%type, email person.email%type,
 									  contact person.contact%type, nif person.nif%type, password person.password%type,
-									 instituto doctors.instituto%type, esp specialization.name%type, esp_mae specialization.name%type default NULL)
+									  instituto doctors.instituto%type, esp specialization.name%type, esp_mae specialization.name%type default NULL)
 language plpgsql
 as $$
 declare
@@ -736,7 +736,7 @@ begin
 	end if;
 	select id_specialization into esp_id from specialization where specialization.name = esp;
 	if not found then
-		erro := 'Especialidade não existe';
+		erro := 'This specialization does not exist';
 		raise exception 'erro';
 	end if;
 	perform * from doctors_specialization 
@@ -744,7 +744,7 @@ begin
 	if not found then
 		insert into doctors_specialization values (cc, esp_id);
 	else
-		erro := 'Doutor já tem esta especialidade';
+		erro := 'This doctor already has this specialization';
 		raise exception 'erro';
 	end if;
 exception
@@ -785,13 +785,13 @@ begin
 		else
 			select level into level_chefe_id from hierarchy where hierarchy.nome = hier_chefe;
 			if not found then
-				erro := 'Hierarquia chefe não existe';
+				erro := 'This upper hierarchy does not exist';
 				raise exception 'erro';
 			end if;
 			insert into hierarchy values (nextval('hierarchy_level_seq'), hier, level_chefe_id);
 		end if;
 	else
-		erro:='Hierarquia já existe';
+		erro:='This hierarchy already exists';
 		raise exception 'erro';
 	end if;
 exception
@@ -817,7 +817,7 @@ begin
 	end if;
 	select level into level_id from hierarchy where hierarchy.nome = hier;
 	if not found then
-		erro := 'hierarquia não existe';
+		erro := 'This hierarchy does not exist';
 		raise exception 'erro';
 	end if;
 	insert into nurses values (level_id, cc);
@@ -839,12 +839,12 @@ declare
 begin
 	perform id_app from appointments where data = date and id_app = id;
 	if not found then
-		erro:='Data e id da consulta nao consistentes';
+		erro:='Appointment date and ID not consistent';
 		raise exception 'erro';
 	end if;
 	perform appointments_id_app from appointments_prescriptions where id = appointments_id_app;
 	if found then
-		erro:='Já existe prescrição para esta consulta';
+		erro:='A prescription already exists for this appointment';
 		raise exception 'erro';
 	end if;
 	drop table if exists auxiliar;
@@ -865,7 +865,7 @@ begin
 		from medication, auxiliar
 		where medication.name = auxiliar.medication;
 		if (nMeds != (select count(*) from auxiliar)) then
-			erro := 'Pelo menos um dos medicamentos não existe';
+			erro := 'At least one of the medications does not exist';
 			raise exception 'erro';
 		end if;
 		insert into is_comprised_app (prescriptions_id_pres, amount, medication_id_med)
@@ -892,12 +892,12 @@ declare
 begin
 	perform id_hos from hospitalizations where date_begin = date and id_hos = id;
 	if not found then
-		erro:='Data e id da hospitalização nao consistentes';
+		erro:='Hospitalization date and ID not consistent';
 		raise exception 'erro';
 	end if;
 	perform hospitalizations_id_hos from prescriptions_hospitalizations where id = hospitalizations_id_hos;
 	if found then
-		erro:='Já existe prescrição para esta hospitalização';
+		erro:='A prescription already exists for this hospitalization';
 		raise exception 'erro';
 	end if;
 	drop table if exists auxiliar;
@@ -918,7 +918,7 @@ begin
 		from medication, auxiliar
 		where auxiliar.medication = medication.name;
 		if (nMeds != (select count(*) from auxiliar)) then
-			erro := 'Pelo menos um dos medicamentos não existe';
+			erro := 'At least one of the medications does not exist';
 			raise exception 'erro';
 		end if;
 		insert into is_comprised_app (prescriptions_id_pres, amount, medication_id_med)
@@ -959,7 +959,7 @@ begin
             values (side, medi, meds[i].prob, meds[i].sev); 
         end loop;
     else
-        erro := 'Medicamento já existe';
+        erro := 'This medication already exists';
         raise exception 'erro';
     end if;
 exception
@@ -1244,14 +1244,14 @@ BEGIN
     -- Check if the nurses are available
     FOREACH nurse_role IN ARRAY nurses LOOP
         IF NOT is_nurse_available(nurse_role.nurse_id, input_date) THEN
-            RAISE EXCEPTION 'Nurse with id % is not available on the specified date', nurse_role.nurse_id USING ERRCODE = '45000';
+            RAISE EXCEPTION 'Nurse with ID % is not available on the specified date', nurse_role.nurse_id USING ERRCODE = '45000';
         END IF;
     END LOOP;
 
     -- If a hospitalization_id is provided, check if it exists
     IF input_hospitalization_id IS NOT NULL THEN
         IF NOT EXISTS (SELECT 1 FROM hospitalizations WHERE id_hos = input_hospitalization_id) THEN
-            RAISE EXCEPTION 'Hospitalization with id % does not exist', input_hospitalization_id USING ERRCODE = '45000';
+            RAISE EXCEPTION 'Hospitalization with ID % does not exist', input_hospitalization_id USING ERRCODE = '45000';
         END IF;
     -- If a hospitalization_id is not provided, create a new hospitalization and a new bill
     ELSE
@@ -1311,7 +1311,7 @@ BEGIN
     -- Check if the nurses are available
     FOREACH nurse_role IN ARRAY nurses LOOP
         IF NOT is_nurse_available(nurse_role.nurse_id, input_date) THEN
-            RAISE EXCEPTION 'Nurse with id % is not available on the specified date', nurse_role.nurse_id USING ERRCODE = '45000';
+            RAISE EXCEPTION 'Nurse with ID % is not available on the specified date', nurse_role.nurse_id USING ERRCODE = '45000';
         END IF;
     END LOOP;
 
