@@ -64,3 +64,25 @@ To run the database using Docker, execute the following command:
 ```bash
 docker-compose up -d
 ```
+
+## For Linux/UNIX users
+
+1. **If you are having trouble with permissions use sudo**
+```bash
+sudo docker-compose down 
+sudo docker-compose up -d db
+sudo docker-compose up api
+```
+
+2. **The first time you open the db you may want to use**
+```
+sudo docker-compose up --build
+```
+Followed by a CTRL-C and then do the steps above
+
+
+3. **If you are having trouble installing psycopg2**
+
+```
+change psycopg2 to psycopg2-binary in requirements.txt
+```
