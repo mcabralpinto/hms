@@ -93,11 +93,16 @@ CREATE TABLE
 	);
 
 CREATE TABLE
-	prescriptions (id_pres SERIAL, PRIMARY KEY (id_pres));
+	prescriptions (
+		id_pres	 SERIAL,
+		validity DATE NOT NULL,
+		PRIMARY KEY(id_pres)
+	);
 
 CREATE TABLE
 	is_comprised_app (
 		amount INTEGER NOT NULL,
+		frequency INTEGER NOT NULL,
 		medication_id_med INTEGER,
 		prescriptions_id_pres INTEGER,
 		PRIMARY KEY (medication_id_med, prescriptions_id_pres)
@@ -571,20 +576,20 @@ alter SEQUENCE billings_id_bill_seq
 RESTART WITH 5;
 
 insert into
-	prescriptions (id_pres)
+	prescriptions (id_pres, validity)
 values
-	(1),
-	(2);
+	(1, '2024-05-16'),
+	(2, '2024-05-16');
 
 alter SEQUENCE prescriptions_id_pres_seq
 RESTART WITH 3;
 
 insert into
-	is_comprised_app (amount, medication_id_med, prescriptions_id_pres)
+	is_comprised_app (amount, frequency, medication_id_med, prescriptions_id_pres)
 values
-	(1, 1, 1),
-	(2, 2, 1),
-	(3, 3, 2);
+	(1, 1, 1, 1),
+	(2, 1, 2, 1),
+	(3, 1, 3, 2);
 
 insert into
 	appointments (
@@ -678,9 +683,15 @@ create or replace procedure addPatient(name person.name%type, cc person.cc%type,
 									  contact person.contact%type, nif person.nif%type, password person.password%type)
 language plpgsql
 as $$
+declare
+	erro varchar(512) = 'erro';
 begin
 	call addPerson(name, cc, email, contact, nif, password);
 	insert into patients values (nextval('patients_health_user_id_seq'), cc);
+exception
+	when others then
+		erro:=sqlerrm;
+		raise exception '%', erro;
 end;
 $$;
 
@@ -696,9 +707,10 @@ begin
 	select specialization.id_specialization into esp_id from specialization where specialization.name = esp;
 	if not found then
 		insert into specialization values (esp, nextval('specialization_id_specialization_seq'), currval('specialization_id_specialization_seq'));
-		esp_id := currval('specialization_id_specialization_seq');
+		select id_specialization into esp_id 
+		from specialization where specialization.name = esp;
 	elsif esp_mae == '' then
-		erro:='Especialidade já existe';
+		erro:='This specialization already exists';
 		raise exception 'erro';
 	end if;
 	if esp_mae != '' then
@@ -727,13 +739,25 @@ declare
 	erro varchar(512) = 'erro';
 	esp_id integer;
 begin
-	call addPerson(name, cc, email, contact, nif, password);
-	call addEmployee(cc);
+	begin
+		call addPerson(name, cc, email, contact, nif, password);
+		call addEmployee(cc);
+	exception
+		when others then
+			erro:=sqlerrm;
+			raise exception '%', erro;
+	end;
 	insert into doctors
 	values(nextval('doctors_id_lic_seq'), instituto, cc);
-	if esp_mae is not NULL then
-		call addSpecialization(cc, esp, esp_mae);
-	end if;
+	begin
+		if esp_mae is not NULL then
+				call addSpecialization(cc, esp, esp_mae);
+		end if;
+	exception
+		when others then
+			erro := sqlerrm;
+			raise exception '%', erro;
+	end;
 	select id_specialization into esp_id from specialization where specialization.name = esp;
 	if not found then
 		erro := 'This specialization does not exist';
@@ -758,14 +782,20 @@ create or replace procedure addAssistant(name person.name%type, cc person.cc%typ
 										 contact person.contact%type, nif person.nif%type, password person.password%type)
 language plpgsql
 as $$
+declare
+	erro varchar(512) = 'erro';
 begin
 	call addPerson(name, cc, email, contact, nif, password);
 	call addEmployee(cc);
 	insert into assistants values (cc);
+exception
+	when others then
+		erro:=sqlerrm;
+		raise exception '%', erro;
 end;
 $$;
 
---addHiearachy
+--addHierachy
 create or replace procedure addHierarchy(hier hierarchy.nome%type, hier_chefe hierarchy.nome%type)
 language plpgsql
 as $$
@@ -810,11 +840,17 @@ declare
 	erro varchar(512) = 'error';
 	level_id integer;
 begin
-	call addPerson(name, cc, email, contact, nif, password);
-	call addEmployee(cc);
+	begin
+		call addPerson(name, cc, email, contact, nif, password);
+		call addEmployee(cc);
 	if hier_chefe is not NULL then
 		call addHierarchy(hier, hier_chefe);
 	end if;
+	exception
+		when others then
+			erro:=sqlerrm;
+			raise exception '%', erro;
+	end;
 	select level into level_id from hierarchy where hierarchy.nome = hier;
 	if not found then
 		erro := 'This hierarchy does not exist';
@@ -1030,7 +1066,7 @@ BEGIN
         hospitalizations
         JOIN billings ON hospitalizations.billings_id_bill = billings.id_bill
         JOIN surgeries ON hospitalizations.id_hos = surgeries.hospitalizations_id_hos
-        JOIN prescriptions_hospitalizations ON hospitalizations.id_hos = prescriptions_hospitalizations.hospitalizations_id_hos
+        LEFT JOIN prescriptions_hospitalizations ON hospitalizations.id_hos = prescriptions_hospitalizations.hospitalizations_id_hos
     WHERE 
         hospitalizations.date_begin = p_date;
 END; $$;
@@ -1355,9 +1391,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER create_bill_trigger_hosp
-BEFORE INSERT ON hospitalizations
-FOR EACH ROW
-EXECUTE FUNCTION create_new_bill_surgery();
-
-
+--CREATE TRIGGER create_bill_trigger_hosp
+--BEFORE INSERT ON hospitalizations
+--FOR EACH ROW
+--EXECUTE FUNCTION create_new_bill_surgery();
